@@ -98,35 +98,61 @@ async def process_messaging_event(messaging_event: Dict[str, Any]):
     """
     Process individual messaging events
     """
+    print(f"=== PROCESSING MESSAGING EVENT ===")
+    print(f"Full event: {json.dumps(messaging_event, indent=2)}")
+    
     sender_id = messaging_event.get("sender", {}).get("id")
     recipient_id = messaging_event.get("recipient", {}).get("id")
+    
+    print(f"Sender ID: {sender_id}")
+    print(f"Recipient ID: {recipient_id}")
     
     # Handle text messages
     if "message" in messaging_event:
         message = messaging_event["message"]
+        print(f"Message object: {json.dumps(message, indent=2)}")
         
         # Skip if message has attachments only (no text)
         if "text" not in message:
+            print("⚠️ Message has no text content, skipping...")
             return
         
         message_text = message["text"]
-        print(f"Received message from {sender_id}: {message_text}")
+        print(f"📨 Received message from {sender_id}: {message_text}")
         
-        # Generate response using chatbot service
-        response_text = await chatbot_service.generate_response(message_text, sender_id)
-        
-        # Send response back to user
-        await send_message(sender_id, response_text)
+        try:
+            # Generate response using chatbot service
+            print("🤖 Generating OpenAI response...")
+            response_text = await chatbot_service.generate_response(message_text, sender_id)
+            print(f"✅ Generated response: {response_text}")
+            
+            # Send response back to user
+            print("📤 Sending response to user...")
+            await send_message(sender_id, response_text)
+            print("✅ Response sent successfully")
+            
+        except Exception as e:
+            print(f"❌ Error processing message: {str(e)}")
+            import traceback
+            traceback.print_exc()
     
     # Handle postback events (button clicks, etc.)
     elif "postback" in messaging_event:
         postback = messaging_event["postback"]
         payload = postback.get("payload", "")
-        print(f"Received postback from {sender_id}: {payload}")
+        print(f"🔘 Received postback from {sender_id}: {payload}")
         
-        # Handle postback
-        response_text = await chatbot_service.handle_postback(payload, sender_id)
-        await send_message(sender_id, response_text)
+        try:
+            # Handle postback
+            response_text = await chatbot_service.handle_postback(payload, sender_id)
+            await send_message(sender_id, response_text)
+            print("✅ Postback response sent successfully")
+        except Exception as e:
+            print(f"❌ Error processing postback: {str(e)}")
+            import traceback
+            traceback.print_exc()
+    else:
+        print(f"⚠️ Unknown messaging event type: {list(messaging_event.keys())}")
 
 async def send_message(recipient_id: str, message_text: str):
     """

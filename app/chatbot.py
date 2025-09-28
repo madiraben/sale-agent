@@ -141,13 +141,16 @@ Focus on being helpful and building trust with potential customers."""
         Send a text message to Facebook Messenger user
         """
         if not self.page_access_token:
-            print("Warning: PAGE_ACCESS_TOKEN not set, cannot send messages")
+            print("❌ Warning: PAGE_ACCESS_TOKEN not set, cannot send messages")
             return
         
         message_data = {
             "recipient": {"id": recipient_id},
             "message": {"text": message_text}
         }
+        
+        print(f"📤 Sending message to {recipient_id}: {message_text}")
+        print(f"📤 Message data: {json.dumps(message_data, indent=2)}")
         
         try:
             response = requests.post(
@@ -156,13 +159,18 @@ Focus on being helpful and building trust with potential customers."""
                 data=json.dumps(message_data)
             )
             
+            print(f"📤 Facebook API response status: {response.status_code}")
+            print(f"📤 Facebook API response: {response.text}")
+            
             if response.status_code == 200:
-                print(f"Message sent successfully to {recipient_id}")
+                print(f"✅ Message sent successfully to {recipient_id}")
             else:
-                print(f"Failed to send message: {response.status_code} - {response.text}")
+                print(f"❌ Failed to send message: {response.status_code} - {response.text}")
                 
         except Exception as e:
-            print(f"Error sending message: {str(e)}")
+            print(f"❌ Error sending message: {str(e)}")
+            import traceback
+            traceback.print_exc()
     
     def _extract_name(self, text: str) -> Optional[str]:
         """
