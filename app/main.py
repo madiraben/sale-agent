@@ -1,9 +1,9 @@
-from fastapi import FastAPI, Request, HTTPException
+from fastapi import FastAPI, Request, HTTPException, Query
 from fastapi.responses import PlainTextResponse
 import hashlib
 import hmac
 import json
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 from config.settings import settings
 from app.chatbot import ChatbotService
 
@@ -23,19 +23,29 @@ async def root():
 
 @app.get("/webhook")
 async def verify_webhook(
-    hub_mode: str = None,
-    hub_challenge: str = None,
-    hub_verify_token: str = None
+    request: Request,  # Add this
+    hub_mode: Optional[str] = Query(None, alias="hub.mode"),
+    hub_challenge: Optional[str] = Query(None, alias="hub.challenge"),
+    hub_verify_token: Optional[str] = Query(None, alias="hub.verify_token")
 ):
     """
     Webhook verification endpoint for Facebook Messenger
     This endpoint is called by Facebook to verify the webhook URL
     """
+    # Debug logging
+    print(f"=== WEBHOOK VERIFICATION DEBUG ===")
+    print(f"Headers: {dict(request.headers)}")
+    print(f"Query params: hub_mode={hub_mode}, hub_challenge={hub_challenge}, hub_verify_token={hub_verify_token}")
+    print(f"Settings VERIFY_TOKEN: '{settings.VERIFY_TOKEN}'")
+    print(f"Comparison: '{hub_verify_token}' == '{settings.VERIFY_TOKEN}' = {hub_verify_token == settings.VERIFY_TOKEN}")
+    
     if hub_mode == "subscribe" and hub_verify_token == settings.VERIFY_TOKEN:
-        print("Webhook verified successfully!")
+        print("✅ Webhook verified successfully!")
         return PlainTextResponse(content=hub_challenge)
     else:
-        print("Webhook verification failed!")
+        print(f"❌ Webhook verification failed!")
+        print(f"   Mode check: {hub_mode} == 'subscribe' = {hub_mode == 'subscribe'}")
+        print(f"   Token check: {hub_verify_token} == {settings.VERIFY_TOKEN} = {hub_verify_token == settings.VERIFY_TOKEN}")
         raise HTTPException(status_code=403, detail="Forbidden")
 
 @app.post("/webhook")
