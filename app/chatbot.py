@@ -2,86 +2,135 @@ import requests
 import json
 import re
 from typing import Dict, Any, Optional
+from openai import OpenAI
 from config.settings import settings
 
 class ChatbotService:
     """
-    Main chatbot service for processing messages and generating responses
+    Main chatbot service for processing messages and generating responses using OpenAI
     """
     
     def __init__(self):
         self.page_access_token = settings.PAGE_ACCESS_TOKEN
         self.send_api_url = f"https://graph.facebook.com/v18.0/me/messages?access_token={self.page_access_token}"
         
+        # Initialize OpenAI client
+        if settings.OPENAI_API_KEY:
+            self.openai_client = OpenAI(api_key=settings.OPENAI_API_KEY)
+        else:
+            print("Warning: OPENAI_API_KEY not set, OpenAI features will not work")
+            self.openai_client = None
+        
         # Simple conversation state storage (in production, use a database)
         self.user_contexts = {}
+        
+        # System prompt for the chatbot
+        self.system_prompt = """You are a helpful and friendly sales assistant chatbot. Your role is to:
+        
+1. Greet customers warmly and professionally
+2. Answer questions about products and services
+3. Provide helpful information and support
+4. Guide customers through their purchase journey
+5. Handle customer inquiries with empathy and understanding
+6. Keep responses conversational but professional
+7. If you don't know something specific, offer to connect them with human support
+
+Keep your responses concise (under 160 characters when possible for messaging) but informative. 
+Be personable and use the customer's name when you know it.
+Focus on being helpful and building trust with potential customers."""
     
     async def generate_response(self, message_text: str, sender_id: str) -> str:
         """
-        Generate a response to the user's message using basic NLP and rules
+        Generate a response to the user's message using OpenAI
         """
-        message_lower = message_text.lower().strip()
+        if not self.openai_client:
+            return "I'm sorry, but I'm currently unable to process your message. Please try again later or contact our support team."
         
         # Get or create user context
-        user_context = self.user_contexts.get(sender_id, {"state": "default", "name": None})
+        user_context = self.user_contexts.get(sender_id, {"conversation_history": [], "name": None})
         
-        # Handle greetings
-        if any(greeting in message_lower for greeting in ["hello", "hi", "hey", "good morning", "good afternoon", "good evening"]):
+        # Add user message to conversation history
+        user_context["conversation_history"].append({"role": "user", "content": message_text})
+        
+        # Keep conversation history manageable (last 10 messages)
+        if len(user_context["conversation_history"]) > 10:
+            user_context["conversation_history"] = user_context["conversation_history"][-10:]
+        
+        try:
+            # Prepare messages for OpenAI
+            messages = [{"role": "system", "content": self.system_prompt}]
+            
+            # Add user context if we have a name
             if user_context.get("name"):
-                response = f"Hello again, {user_context['name']}! How can I help you today?"
-            else:
-                response = "Hello! Welcome to our chatbot. What's your name?"
-                user_context["state"] = "waiting_for_name"
-        
-        # Handle name collection
-        elif user_context.get("state") == "waiting_for_name":
-            # Extract potential name from message
-            name = self._extract_name(message_text)
-            if name:
-                user_context["name"] = name
-                user_context["state"] = "default"
-                response = f"Nice to meet you, {name}! How can I assist you today?"
-            else:
-                response = "I'd love to know your name! Could you tell me what I should call you?"
-        
-        # Handle help requests
-        elif any(keyword in message_lower for keyword in ["help", "support", "assistance"]):
-            response = self._get_help_message()
-        
-        # Handle product/service inquiries
-        elif any(keyword in message_lower for keyword in ["product", "service", "price", "cost", "buy", "purchase"]):
-            response = self._handle_product_inquiry(message_lower)
-        
-        # Handle thanks
-        elif any(keyword in message_lower for keyword in ["thank", "thanks", "appreciate"]):
-            response = "You're very welcome! Is there anything else I can help you with?"
-        
-        # Handle goodbye
-        elif any(keyword in message_lower for keyword in ["bye", "goodbye", "see you", "farewell"]):
-            name = user_context.get("name", "")
-            response = f"Goodbye{', ' + name if name else ''}! Feel free to message me anytime. Have a great day!"
-        
-        # Handle questions
-        elif message_text.strip().endswith("?"):
-            response = self._handle_question(message_lower)
-        
-        # Default response
-        else:
-            response = self._get_default_response(message_lower)
-        
-        # Update user context
-        self.user_contexts[sender_id] = user_context
-        
-        return response
+                context_message = f"The customer's name is {user_context['name']}. Use their name in your responses when appropriate."
+                messages.append({"role": "system", "content": context_message})
+            
+            # Add conversation history
+            messages.extend(user_context["conversation_history"])
+            
+            # Generate response using OpenAI
+            response = self.openai_client.chat.completions.create(
+                model="gpt-3.5-turbo",
+                messages=messages,
+                max_tokens=150,
+                temperature=0.7,
+                presence_penalty=0.1,
+                frequency_penalty=0.1
+            )
+            
+            bot_response = response.choices[0].message.content.strip()
+            
+            # Extract name if this seems like an introduction
+            if not user_context.get("name") and any(word in message_text.lower() for word in ["my name is", "i'm", "i am", "call me"]):
+                extracted_name = self._extract_name(message_text)
+                if extracted_name:
+                    user_context["name"] = extracted_name
+            
+            # Add bot response to conversation history
+            user_context["conversation_history"].append({"role": "assistant", "content": bot_response})
+            
+            # Update user context
+            self.user_contexts[sender_id] = user_context
+            
+            return bot_response
+            
+        except Exception as e:
+            print(f"Error generating OpenAI response: {str(e)}")
+            # Fallback to a generic helpful response
+            return "I'm having trouble processing your message right now. Could you please try again? If the issue persists, I can connect you with our support team."
     
     async def handle_postback(self, payload: str, sender_id: str) -> str:
         """
         Handle postback events (button clicks, quick replies, etc.)
         """
+        # Use OpenAI to handle postbacks as well for more natural responses
+        if self.openai_client:
+            try:
+                postback_context = f"The user clicked a button with payload: {payload}. Respond appropriately."
+                
+                messages = [
+                    {"role": "system", "content": self.system_prompt},
+                    {"role": "system", "content": postback_context},
+                    {"role": "user", "content": f"Button clicked: {payload}"}
+                ]
+                
+                response = self.openai_client.chat.completions.create(
+                    model="gpt-3.5-turbo",
+                    messages=messages,
+                    max_tokens=100,
+                    temperature=0.5
+                )
+                
+                return response.choices[0].message.content.strip()
+                
+            except Exception as e:
+                print(f"Error generating postback response: {str(e)}")
+        
+        # Fallback responses for specific payloads
         if payload == "GET_STARTED":
             return "Welcome! I'm here to help you. What can I do for you today?"
         elif payload == "HELP":
-            return self._get_help_message()
+            return "I'm here to help! You can ask me about our products, services, pricing, or anything else you'd like to know."
         elif payload == "CONTACT_SUPPORT":
             return "You can contact our support team at support@example.com or call +1-234-567-8900"
         else:
@@ -129,56 +178,6 @@ class ChatbotService:
             if word and word[0].isupper() and len(word) > 1:
                 # Clean the word (remove punctuation)
                 clean_word = re.sub(r'[^\w]', '', word)
-                if clean_word:
+                if clean_word and len(clean_word) > 1:
                     return clean_word
         return None
-    
-    def _get_help_message(self) -> str:
-        """
-        Get the help message with available commands
-        """
-        return """
-I can help you with:
-• General questions and information
-• Product and service inquiries
-• Support and assistance
-• Just having a conversation!
-
-Feel free to ask me anything or just say hello! 😊
-        """.strip()
-    
-    def _handle_product_inquiry(self, message_lower: str) -> str:
-        """
-        Handle product or service related inquiries
-        """
-        if "price" in message_lower or "cost" in message_lower:
-            return "For pricing information, please visit our website or contact our sales team. I can connect you with them if you'd like!"
-        elif "product" in message_lower:
-            return "We offer various products and services. What specific type of product are you interested in?"
-        else:
-            return "I'd be happy to help you learn about our products and services! What specifically are you looking for?"
-    
-    def _handle_question(self, message_lower: str) -> str:
-        """
-        Handle questions from users
-        """
-        if any(keyword in message_lower for keyword in ["how", "what", "when", "where", "why", "who"]):
-            return "That's a great question! While I try my best to help, for detailed information I'd recommend contacting our support team or checking our website. Is there something specific I can help you with right now?"
-        else:
-            return "I'd love to help answer your question! Could you provide a bit more detail so I can give you the best response?"
-    
-    def _get_default_response(self, message_lower: str) -> str:
-        """
-        Generate a default response for unrecognized messages
-        """
-        responses = [
-            "I understand! Tell me more about what you're looking for.",
-            "Interesting! How can I help you with that?",
-            "I'm here to help! Could you tell me more about what you need?",
-            "Thanks for reaching out! What can I do for you today?",
-            "I'd love to assist you! Can you provide a bit more detail?"
-        ]
-        
-        # Simple hash-based selection for consistency per user input
-        response_index = len(message_lower) % len(responses)
-        return responses[response_index]

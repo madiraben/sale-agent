@@ -10,6 +10,9 @@ class Settings(BaseSettings):
     PAGE_ACCESS_TOKEN: Optional[str] = None
     APP_SECRET: Optional[str] = None
     
+    # OpenAI Configuration
+    OPENAI_API_KEY: Optional[str] = None
+    
     # Application Configuration  
     APP_NAME: str = "Messenger Chatbot"
     DEBUG: bool = False

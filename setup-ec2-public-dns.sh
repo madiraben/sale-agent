@@ -6,9 +6,29 @@ set -e
 
 echo "🚀 Setting up Messenger Chatbot on EC2 with Public DNS..."
 
-# Get public DNS
-PUBLIC_DNS=$(curl -s http://169.254.169.254/latest/meta-data/public-hostname)
-echo "📍 Your EC2 Public DNS: $PUBLIC_DNS"
+# Option 1: Use your custom domain (RECOMMENDED)
+# Uncomment and set your domain name:
+PUBLIC_DNS="social-sale-agent-webhook.click"
+
+# Option 2: Auto-detect (fallback to IP if no DNS)
+if [ -z "$PUBLIC_DNS" ]; then
+    PUBLIC_DNS=$(curl -s http://169.254.169.254/latest/meta-data/public-hostname)
+    if [ -z "$PUBLIC_DNS" ]; then
+        PUBLIC_DNS=$(curl -s http://169.254.169.254/latest/meta-data/public-ipv4)
+        if [ -z "$PUBLIC_DNS" ]; then
+            # Fallback to your known public IP
+            PUBLIC_DNS="18.141.189.40"
+            echo "📍 No public DNS/IP from metadata, using hardcoded IP: $PUBLIC_DNS"
+        else
+            echo "📍 No public DNS found, using Public IP: $PUBLIC_DNS"
+        fi
+    else
+        echo "📍 Your EC2 Public DNS: $PUBLIC_DNS"
+    fi
+fi
+
+# Debug: Show what we got
+echo "🔍 Debug - PUBLIC_DNS value: '$PUBLIC_DNS'"
 
 # Update system
 echo "📦 Updating system packages..."
@@ -16,7 +36,13 @@ sudo apt update && sudo apt upgrade -y
 
 # Install dependencies
 echo "🔧 Installing dependencies..."
-sudo apt install python3 python3-pip curl nginx openssl git -y
+sudo apt install python3 python3-pip curl nginx openssl git snapd -y
+
+# Install certbot for Let's Encrypt SSL
+echo "🔐 Installing Certbot for SSL certificates..."
+sudo snap install core; sudo snap refresh core
+sudo snap install --classic certbot
+sudo ln -sf /snap/bin/certbot /usr/bin/certbot
 
 # Install uv if not present
 if ! command -v uv &> /dev/null; then
@@ -47,11 +73,44 @@ fi
 echo "🔒 Creating SSL certificates..."
 sudo mkdir -p /etc/ssl/private
 
-# Generate self-signed certificate
-sudo openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
-  -keyout /etc/ssl/private/nginx-selfsigned.key \
-  -out /etc/ssl/certs/nginx-selfsigned.crt \
-  -subj "/C=US/ST=AWS/L=EC2/O=MessengerBot/CN=$PUBLIC_DNS"
+# Check if domain is using an IP (no Let's Encrypt) or real domain (use Let's Encrypt)
+if [[ $PUBLIC_DNS =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    echo "🔓 Using self-signed certificate for IP address"
+    # Generate self-signed certificate for IP
+    sudo openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+      -keyout /etc/ssl/private/nginx-selfsigned.key \
+      -out /etc/ssl/certs/nginx-selfsigned.crt \
+      -subj "/C=US/ST=AWS/L=EC2/O=MessengerBot/CN=$PUBLIC_DNS"
+    SSL_CERT="/etc/ssl/certs/nginx-selfsigned.crt"
+    SSL_KEY="/etc/ssl/private/nginx-selfsigned.key"
+else
+    echo "🔒 Using Let's Encrypt certificate for domain: $PUBLIC_DNS"
+    # Wait for DNS to propagate
+    echo "⏳ Waiting 30 seconds for DNS to propagate..."
+    sleep 30
+    
+    # Test DNS resolution
+    echo "🧪 Testing DNS resolution..."
+    nslookup $PUBLIC_DNS || echo "⚠️ DNS might not be fully propagated yet"
+    
+    # Get Let's Encrypt certificate
+    sudo certbot certonly --nginx --non-interactive --agree-tos --email admin@$PUBLIC_DNS -d $PUBLIC_DNS || {
+        echo "⚠️ Let's Encrypt failed, falling back to self-signed certificate"
+        sudo openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+          -keyout /etc/ssl/private/nginx-selfsigned.key \
+          -out /etc/ssl/certs/nginx-selfsigned.crt \
+          -subj "/C=US/ST=AWS/L=EC2/O=MessengerBot/CN=$PUBLIC_DNS"
+        SSL_CERT="/etc/ssl/certs/nginx-selfsigned.crt"
+        SSL_KEY="/etc/ssl/private/nginx-selfsigned.key"
+    }
+    
+    # Set certificate paths for Let's Encrypt
+    if [ -f "/etc/letsencrypt/live/$PUBLIC_DNS/fullchain.pem" ]; then
+        SSL_CERT="/etc/letsencrypt/live/$PUBLIC_DNS/fullchain.pem"
+        SSL_KEY="/etc/letsencrypt/live/$PUBLIC_DNS/privkey.pem"
+        echo "✅ Let's Encrypt certificate obtained successfully"
+    fi
+fi
 
 echo "✅ SSL certificate created"
 
@@ -68,8 +127,8 @@ server {
     listen 443 ssl;
     server_name $PUBLIC_DNS;
 
-    ssl_certificate /etc/ssl/certs/nginx-selfsigned.crt;
-    ssl_certificate_key /etc/ssl/private/nginx-selfsigned.key;
+    ssl_certificate ${SSL_CERT};
+    ssl_certificate_key ${SSL_KEY};
     
     # SSL configuration
     ssl_protocols TLSv1.2 TLSv1.3;
